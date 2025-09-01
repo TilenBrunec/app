@@ -2,13 +2,14 @@
 import React, { useEffect, useRef, useState } from "react";
 import Player from "./Player";
 import Ball from "./Ball";
+import Hoop from "./Hoop";
 
 /** ——                    —— */
 /** —— TIPI IN KONSTANTE—— */
 /** ——                —— */
 
-type XY = { x: number; y: number }; // tip za 2D točko/vektor
-// Uporablja se za pozicije (igralci, žoga), kurzor, kontrolne točke bezier krivulje itd.
+type XY = { x: number; y: number };
+
 /** —— ZACETNE POZICIJE —— */
 const initialPlayers = [
   { id: 1, x: 225, y: 270, team: "home" as const },
@@ -25,12 +26,12 @@ const initialPlayers = [
 const initialBall: XY = { x: 250, y: 260 };
 
 /** —— BASKETBALL —— */
-const BALL_ON_PLAYER_OFFSET = 8; // snap žoge na (player.x+8, player.y+8) KAM NA IGRALCA SE DA ZOGA """zaj je na sredino"
+const BALL_ON_PLAYER_OFFSET = 8; // snap žoge na (player.x+8, player.y+8)
 const BALL_PASS_CURVE = 15; // curve podaje
 
 /** —— trail nastavitve —— */
 const PLAYER_SIZE = 40;
-const PLAYER_CENTER = PLAYER_SIZE / 2; //sredina igravca , kamse zalepi zoga
+const PLAYER_CENTER = PLAYER_SIZE / 2;
 const TRAIL_MAX_POINTS = 24;
 const TRAIL_SAMPLE_PX = 18;
 const TRAIL_FADE_MS = 20;
@@ -43,56 +44,69 @@ const WALL_THICK = 7;
 const WALL_LIFETIME_MS = 2500;
 const BLOCK_COLOR_SOFT = "rgba(194, 118, 118, 1)";
 const BLOCK_COLOR_LOCKED = "rgba(236, 76, 76, 1)";
-const BLOCK_OFFSET = 2;// 2px razmika med crto in igralcem
+const BLOCK_OFFSET = 2;
 const DUBLE_CLICK_MS = 600;
 
+/** —— OBRÓČ (nevidna tarča za podajo) —— */
+const HOOP_TOP: XY = { x: 250, y: 36 };
+const HOOP_BOTTOM: XY = { x: 250, y: 764 };
+const USE_BOTTOM_HOOP = false; // true => spodnji obroč, false => zgornji
+const HOOP = USE_BOTTOM_HOOP ? HOOP_BOTTOM : HOOP_TOP;
+
+// hitbox dimenzije za klik
+const HOOP_HIT_W = 44;
+const HOOP_HIT_H = 24;
+
+// kompenzacija, ker žogo rišemo iz zgornjega levega kota (če je ~12×12px -> -6,-6)
+const BALL_ON_HOOP_OFFSET: XY = { x: -6, y: -6 };
+
+// vklopi za vizualni prikaz hitboxa
+const DEBUG_HOOP = false;
 
 /** ——                  —— */
 /** —— MAIN KOMPONENTA—— */
 /** ——             —— */
 
 export default function Court() {
-  const [players, setPlayers] = useState(initialPlayers); // stanje igralcev (id, x, y, team)
-  const [ball, setBall] = useState<XY>(initialBall); // stanje žoge (x, y)
-  const [passArmed, setPassArmed] = useState(false); // ali je zoga klikjena da jo je mozno podat
-  const [ballHolder, setBallHolder] = useState<number | null>(null); // id igralca ki drzi zogo 
-  const wrapperRef = useRef<HTMLDivElement>(null); // ref na div ki drzi celoten court(za merjenje kordinate miško)
-  const [cursor, setCursor] = useState<XY | null>(null); // pozicija miske (x, y) ali null če ni na igrišču
-  const rafId = useRef<number | null>(null); // requestAnimationFrame id (za preklic)
-  const animStart = useRef<number>(0); // čas začetka animacije podaje
-  const animFrom = useRef<XY>({ x: 0, y: 0 }); // iz kje podajamo
-  const animTo = useRef<XY>({ x: 0, y: 0 }); // kam podajamo
-  const ctrl = useRef<XY>({ x: 0, y: 0 }); // kontrolna točka Bezier za krivuljo podaje
-  const [isPassAnimating, setIsPassAnimating] = useState(false); // ali je podaja v teku
-  const animDurationMs = 420; // trajanje animacije podaje v ms  -- 0.42s lowkey lahk fix ker ne dalse se hitreje poda ko na krajse razdalje
-  const [ballRotation, setBallRotation] = useState(0); // rotacija žoge v stopinjah
-  const startRot = useRef(0); // začetna rotacija žoge pri podaji
-  const spinDeg = useRef(720); // koliko stopinj se žoga obrne med podajo
-  const [ballScale, setBallScale] = useState(1); //  pop efekt ob pristanku podaje
-  const popTimer = useRef<number | null>(null); // timer za pop efekt 
+  const [players, setPlayers] = useState(initialPlayers);
+  const [ball, setBall] = useState<XY>(initialBall);
+  const [passArmed, setPassArmed] = useState(false);
+  const [ballHolder, setBallHolder] = useState<number | null>(null);
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const [cursor, setCursor] = useState<XY | null>(null);
+  const rafId = useRef<number | null>(null);
+  const animStart = useRef<number>(0);
+  const animFrom = useRef<XY>({ x: 0, y: 0 });
+  const animTo = useRef<XY>({ x: 0, y: 0 });
+  const ctrl = useRef<XY>({ x: 0, y: 0 });
+  const [isPassAnimating, setIsPassAnimating] = useState(false);
+  const animDurationMs = 420;
+  const [ballRotation, setBallRotation] = useState(0);
+  const startRot = useRef(0);
+  const spinDeg = useRef(720);
+  const [ballScale, setBallScale] = useState(1);
+  const popTimer = useRef<number | null>(null);
 
   // ——— BLOK ———
-  const [blockAim, setBlockAim] = useState<{  //na kerem igralciu je miška in pod kakšnim kotom za izris bloka
+  const [blockAim, setBlockAim] = useState<{
     playerId: number;
     angle: number;
-  } | null>(null);  
- 
-
-  const [lockedBlocks, setLockedBlocks] = useState<  // blok se sprozi (array objektov s key, playerId in angle
+  } | null>(null);
+  const [lockedBlocks, setLockedBlocks] = useState<
     Array<{ key: number; playerId: number; angle: number }>
   >([]);
-  const [pendingBlock, setPendingBlock] = useState<{ // za duble klik detekcijo
+  const [pendingBlock, setPendingBlock] = useState<{
     id: number;
     time: number;
   } | null>(null);
 
   // ——— TRAIL ———
-  const [trails, setTrails] = useState<Record<number, XY[]>>({}); // id igralca -> array točk (x,y) za trail
-  const lastTrailPointRef = useRef<Record<number, XY>>({}); // Zadnja zapisana točka (za vzorčenje na TRAIL_SAMPLE_PX).
-  const currCenterRef = useRef<Record<number, XY>>({}); //Trenutni center igralca med dragom (računamo sproti z dx,dy).
-  const fadeTimers = useRef<Record<number, number>>({}); // da skine trail ko igralec preneha z dragom
+  const [trails, setTrails] = useState<Record<number, XY[]>>({});
+  const lastTrailPointRef = useRef<Record<number, XY>>({});
+  const currCenterRef = useRef<Record<number, XY>>({});
+  const fadeTimers = useRef<Record<number, number>>({});
 
-  //  ——— od tu dalje readme ———
+  // utili za trail
   const dist = (a: XY, b: XY) => Math.hypot(a.x - b.x, a.y - b.y);
   const clearFadeTimer = (id: number) => {
     if (fadeTimers.current[id]) {
@@ -123,14 +137,13 @@ export default function Court() {
     }, TRAIL_FADE_MS);
   };
 
-  /** ---------- podaja ---------- */
+  /** ---------- podaja na igralca ---------- */
   const onPlayerClickForPass = (id: number) => {
     if (!passArmed) return;
     const target = players.find((p) => p.id === id);
     if (!target) return;
 
-    // žoga gre v "zrak" → ni več pri igralcu
-    setBallHolder(null);
+    setBallHolder(null); // žoga gre v "zrak"
 
     animFrom.current = { ...ball };
     animTo.current = {
@@ -148,10 +161,10 @@ export default function Court() {
     setPassArmed(false);
     setIsPassAnimating(true);
     cancelRAF();
-    rafId.current = requestAnimationFrame(tickPass(id));
+    rafId.current = requestAnimationFrame(tickPassToPlayer(id));
   };
 
-  const tickPass =
+  const tickPassToPlayer =
     (targetId: number) =>
     (now: number): void => {
       const p = Math.min(1, (now - animStart.current) / animDurationMs);
@@ -166,10 +179,9 @@ export default function Court() {
       setBallRotation(startRot.current + spinDeg.current * eased);
 
       if (p < 1) {
-        rafId.current = requestAnimationFrame(tickPass(targetId));
+        rafId.current = requestAnimationFrame(tickPassToPlayer(targetId));
       } else {
         cancelRAF();
-        // snap na trenutni targetov položaj + offset (če se je med animacijo premaknil)
         setBall((prev) => {
           const t = players.find((pl) => pl.id === targetId);
           if (!t) return { ...animTo.current };
@@ -180,11 +192,63 @@ export default function Court() {
         });
         setIsPassAnimating(false);
         setBallScale(1.14);
-        setBallHolder(targetId); // žoga je zdaj pri igralcu
+        setBallHolder(targetId);
         if (popTimer.current) window.clearTimeout(popTimer.current);
         popTimer.current = window.setTimeout(() => setBallScale(1), 140);
       }
     };
+
+  /** ---------- podaja v obroč (uporaba nove komponente Hoop) ---------- */
+  const onHoopClickForPass = () => {
+    if (!passArmed) return;
+
+    setBallHolder(null); // žoga v "zrak"
+    animFrom.current = { ...ball };
+    animTo.current = {
+      x: HOOP.x + BALL_ON_HOOP_OFFSET.x,
+      y: HOOP.y + BALL_ON_HOOP_OFFSET.y,
+    };
+    ctrl.current = bezierControl(
+      animFrom.current,
+      animTo.current,
+      BALL_PASS_CURVE
+    );
+
+    startRot.current = ballRotation;
+    animStart.current = performance.now();
+    setPassArmed(false);
+    setIsPassAnimating(true);
+    cancelRAF();
+    rafId.current = requestAnimationFrame(function tickToHoop(
+      now: number
+    ): void {
+      const p = Math.min(1, (now - animStart.current) / animDurationMs);
+      const eased = easeInOutQuad(p);
+      const pos = quadBezier(
+        animFrom.current,
+        ctrl.current,
+        animTo.current,
+        eased
+      );
+      setBall(pos);
+      setBallRotation(startRot.current + spinDeg.current * eased);
+
+      if (p < 1) {
+        rafId.current = requestAnimationFrame(tickToHoop);
+      } else {
+        cancelRAF();
+        setBall({
+          x: HOOP.x + BALL_ON_HOOP_OFFSET.x,
+          y: HOOP.y + BALL_ON_HOOP_OFFSET.y,
+        });
+        setIsPassAnimating(false);
+        setBallScale(1.14);
+        // žoga ostane “pri obroču”, ne nastavljamo ballHolder
+        if (popTimer.current) window.clearTimeout(popTimer.current);
+        popTimer.current = window.setTimeout(() => setBallScale(1), 140);
+      }
+    });
+  };
 
   const cancelRAF = () => {
     if (rafId.current != null) {
@@ -249,7 +313,6 @@ export default function Court() {
     const timeNow = Date.now();
 
     if (blockAim?.playerId === id) {
-      // drugi klik na istega igralca -> prekliči aim (NE zakleni)
       setBlockAim(null);
       setPendingBlock(null);
       return;
@@ -260,11 +323,9 @@ export default function Court() {
       pendingBlock.id === id &&
       timeNow - pendingBlock.time <= DUBLE_CLICK_MS
     ) {
-      // drugi zaporedni klik hitro -> vklopi aim
       setBlockAim({ playerId: id, angle: 0 });
       setPendingBlock(null);
     } else {
-      // shrani kot prvi klik
       setPendingBlock({ id, time: timeNow });
     }
   };
@@ -307,7 +368,7 @@ export default function Court() {
   // barva traila
   const baseColorFor = (id: number) => {
     const team = players.find((p) => p.id === id)?.team;
-    return team === "home" ? [59, 130, 246] : [0, 128, 0]; // blue-500 / lime-500
+    return team === "home" ? [59, 130, 246] : [0, 128, 0];
   };
 
   return (
@@ -409,6 +470,16 @@ export default function Court() {
           />
         )}
       </svg>
+
+      {/* ——— OBRÓČ kot ločena komponenta ——— */}
+      <Hoop
+        x={HOOP.x}
+        y={HOOP.y}
+        hitW={HOOP_HIT_W}
+        hitH={HOOP_HIT_H}
+        debug={DEBUG_HOOP}
+        onClick={onHoopClickForPass}
+      />
 
       {/* igralci */}
       {players.map((player) => {
